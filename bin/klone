@@ -1,0 +1,107 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+# vim:set ft=ruby:
+
+require "pathname"
+require "optparse"
+require "yaml"
+
+require "rubygems"
+require "bundler/setup"
+require "erubis"
+
+class String
+	TABLE = {
+		:black   => 30,
+		:red     => 31,
+		:green   => 32,
+		:yellow  => 33,
+		:blue    => 34,
+		:magenda => 35,
+		:cyan    => 36,
+		:white   => 37,
+		:default => 39
+	}
+
+	def colorize(code)
+		"\e[#{code}m#{self}\e[00m"
+	end
+
+	TABLE.each do |kwd, code|
+		define_method(kwd) { colorize(code) }
+	end
+end
+
+class Klone
+	PREFIX = Pathname("~/.klone").expand_path
+	OPTIONS = {
+		:config => PREFIX + "config"
+	}
+
+	class KloneException < Exception; end
+	class SkeletonNotFound < KloneException; end
+
+	def self.run(argv=ARGV.dup)
+		app = new(argv)
+		app.setup!
+	end
+
+	attr_reader :source
+
+	def initialize(args)
+		@config =
+			if OPTIONS[:config].exist?
+				YAML.load(OPTIONS[:config].read)
+			else
+				{}
+			end.merge(OPTIONS)
+		@pwd = Pathname.pwd.expand_path
+		@skeletons = PREFIX.children.select {|e| e.directory? }
+		src, dst = *args
+		@source = @skeletons.find {|e| e.basename.to_s == src } or raise SkeletonNotFound
+		@target = (@pwd + dst).expand_path
+		@target.mkpath
+	end
+
+	def setup!(src_tree=@source)
+		src_tree.each_child do |src|
+			dst = src.sub(@source.to_s, @target.to_s)
+			if src.directory?
+				dst.mkpath
+				say "\t create".green + ": #{dst}"
+				setup!(src)
+			else
+				if src.extname == '.skeleton'
+					erb = Erubis::Eruby.new(src.read)
+					content = erb.evaluate({:source => src, :target => dst})
+					dst.sub_ext('').open('w') do |f|
+						f.puts content
+					end
+					say "\tcompile".yellow + ": #{dst.sub_ext('')}"
+				else
+					content = src.read
+					dst.open('w') do |f|
+						f.puts content
+					end
+					say "\t create".green + ": #{dst}"
+				end
+			end
+		end
+	end
+
+	private
+	def say(*msg)
+		STDERR.puts(*msg) unless OPTIONS[:quiet]
+	end
+end
+
+OptionParser.new.instance_eval do
+	accept(Pathname) {|arg| Pathname(arg) }
+
+	on(*%w(-c --config=CONF), Pathname) {|conf| Klone::OPTIONS[:config] = conf }
+	on(*%w(-e --expand-tab=WIDTH), Integer) {|width| Klone::OPTIONS[:expand_tab] = width }
+	on(*%w(-q --quiet)) {|v| Klone::OPTIONS[:quiet] = v }
+end.parse!(ARGV)
+
+Klone.run
+
